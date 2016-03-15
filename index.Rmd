@@ -1,0 +1,420 @@
+---
+title: "Finding The Strongest Pokémon Using Battle Simualtion and Capital Asset Pricing Model"
+author: "Charin Polpanumas"
+date: "March 14, 2016"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    theme: united
+---
+# The Big Idea
+
+2016 is a great year to be a Pokémon fan. Pokémon Sun and Moon are expected to be release during [the holiday season](http://www.pokemon.com/us/pokemon-video-games/pokemon-sun-and-pokemon-moon/) and Niantic's [Pokémon Go](http://www.pokemon.com/us/pokemon-video-games/pokemon-go/) due some time later this year. The time has come for us to answer one of the most important questions in life, the one that has brought about most heated discussions for elementary schoolers and grown-ups alike: *What is the strongest Pokémon of all time?*
+
+We set out to answer this question by simulating battles for all Pokémon from Generation I to VI, then calculate their ```variance-adjusted average win rate```, in the tradition of the [Sharpe ratio](http://www.investopedia.com/terms/s/sharperatio.asp) often employed in portfolio analysis. The data is obtained from the [Pokémon Database](http://pokemondb.net) including type advatages, Pokédex and moves database. All 800 Pokémons underwent 100 with one another resulting in 800 x 800 x 100 battles simulated in total. We then computed the average variance-adjusted win rates and rank all Pokémons accordingly.
+
+# Data Processing
+
+We scraped dual-type advantage tables, Pokémon statistics, and power and accuracy of all moves from [Pokémon Database](http://pokemondb.net). Then process them for our battle simulation function.
+
+## Required R Libraries
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+library(magrittr) #for %>%
+library(rvest) #for scraping
+library(plyr) #for data frame operations
+library(knitr) #for nice table
+library(ggplot2) #for plotting
+```
+
+## Scrape Type Advantages
+
+This includes type advantages for all type combinations of Pokémons. The first ten entries are displayed below. Rows denote defending and columns denote attacking types.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+#Scrape single type advantages table
+url <- "http://pokemondb.net/type"
+type_adv <- url %>%
+  read_html() %>%
+  html_nodes(xpath='/html/body/article/div[2]/div[2]/table') %>%
+  html_table() %>%
+  as.data.frame()
+
+#Set type to be used as column names
+types<-type_adv$DEFENSE..ATTACK..
+
+
+#Scrape dual type advatnages table
+url <- "http://pokemondb.net/type/dual"
+d_type_adv <- url %>%
+  read_html() %>%
+  html_nodes(xpath='//*[@id="dualtypechart"]') %>%
+  html_table() %>%
+  as.data.frame()
+
+#Get rid of tabs on dual types
+d_type_adv$ATTACK........DEFENSE..<-gsub('\t','',d_type_adv$ATTACK........DEFENSE..)
+d_type_adv$ATTACK........DEFENSE..<-gsub('-','',d_type_adv$ATTACK........DEFENSE..)
+
+#Get rid of pokemon no. row
+d_type_adv<-d_type_adv[,-2]
+
+#Get rid of extra headers
+extra_ind<-grep('ATTACK →\nDEFENSE ↴',d_type_adv$ATTACK........DEFENSE..)
+d_type_adv<-d_type_adv[-extra_ind,]
+
+#Set dual types
+d_types<-d_type_adv$ATTACK........DEFENSE..
+
+#Get rid of type column
+d_type_adv<-d_type_adv[,-1]
+
+#Convert to fraction symbols to decimals
+for (i in 1:dim(d_type_adv)[1]){
+    for (j in 1:dim(d_type_adv)[2]){
+        d_type_adv[i,j]<-ifelse(d_type_adv[i,j]==''|is.na(d_type_adv[i,j]),
+                              1,
+                              ifelse(d_type_adv[i,j]=="½",0.5,
+                              ifelse(d_type_adv[i,j]=="¼",0.25,
+                                     d_type_adv[i,j])))
+
+    }
+}
+
+#Convert to numeric
+d_type_adv<-as.data.frame(sapply(d_type_adv,as.numeric))
+
+#Rename rows and columns
+colnames(d_type_adv)<-types
+rownames(d_type_adv)<-d_types
+
+#Print 10
+kable(head(d_type_adv,10),col.names = substr(types,1,3))
+```
+
+## Scrape Pokédex
+
+This includes all Pokémons from Generation I to Generation 6 including their mega, primal and other known special forms. This resulted in 800 Pokémons in total. The data used for analysis include HP, Attack, Defense, Sp.Atk, Sp.Def and Speed of all Pokémons. The first ten entries are displayed below.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+#Scrape pokedex
+url <- "http://pokemondb.net/pokedex/all"
+pokemon <- url %>%
+  read_html() %>%
+  html_nodes(xpath='//*[@id="pokedex"]') %>%
+  html_table() %>%
+  as.data.frame()
+
+#Print first ten
+kable(head(pokemon,10))
+```
+
+## Process Types for Each Pokémon
+
+We process primary and secondary types of each Pokémon for the battle simulation function.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+pokemon$Type1 <- rep(NA,dim(pokemon)[1])
+pokemon$Type2 <- rep(NA,dim(pokemon)[1])
+
+for (i in types){
+    for (j in 1:dim(pokemon)[1]){
+        if(grepl(i,pokemon[j,'Type'])){
+            if (is.na(pokemon[j,'Type1'])){
+                 pokemon[j,'Type1']<-i
+            }
+            else {
+                pokemon[j,'Type2']<-i
+            }
+        }
+    }
+}
+```
+
+# The Definitive Guide to Type Advantages
+
+We explore which type combinations have the top advantages in attack and defense. This gives a rough sketch on how devastating and how durable each type of Pokémons is.
+
+## What Types Have The Most Effective Attack?
+
+This shows the average effectiveness of moves associated with each type. For instance, ```Ground``` type has the highest average effectiveness of moves at 1.33. This means that on average a ```Ground``` move will hit 133% its power.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+b_attack<-data.frame(sort(colMeans(d_type_adv),decreasing = TRUE))
+kable(b_attack,col.names = 'Average Effectiveness of Moves')
+```
+
+## What Types Has The Most Solid Defense?
+
+This shows the average effectiveness of moves associated with each type against all combinations of type. For instance, ```SteelFairy``` type has the lowest average effectiveness of moves at 0.74. This means that on average a ```SteelFairy``` Pokémons will get hit with 74% of move power.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+b_defense<-data.frame(sort(rowMeans(d_type_adv)))
+kable(head(b_defense,10),col.names = 'Average Effectiveness Against Moves')
+```
+
+## Average Accuracy and Power of Moves
+
+We also calculate the average base power and accuracy of all moves. This resulted in average base power 75.06 and 95.24% base accuracy. We will use this in our battle simulation function in the next section.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+url <- "http://pokemondb.net/move/all"
+moves <- url %>%
+  read_html() %>%
+  html_nodes(xpath='//*[@id="moves"]') %>%
+  html_table() %>%
+  as.data.frame()
+
+#Convert power and accuracy to numeric
+moves$Power<-sapply(moves$Power,as.numeric)
+moves$Acc.<-sapply(moves$Acc.,as.numeric)
+#Get their averages
+m_power<-mean(moves$Power,na.rm = TRUE)
+m_acc<-mean(moves$Acc.,na.rm = TRUE)
+m_power
+m_acc
+```
+
+# Battle Simulation
+
+## Battle Simulation Function
+
+The simulation is based on Generation IV rules with all Pokémons assumed to have full IVs and EVs at level 100. Both of them take turn, not unlike in the game, attacking each other with STAB, physical or special moves of their primary or secondary type on each other, depending on which does more damage, and the first Pokémon to reach 0 HP is said to have lost the round. The moves is assumed to have average power and accuracy (75.06 and 95.24% respectively), assuming Stage 1 critical rate. No nature or ability is taken into account. Since we only allow moves that share a type with the Pokémon, when two Pokémon that cannot damage each other type-wise such as Rattata (Normal) and Misdreavus (Ghost), we assume a draw.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+#Battle simulation function
+#Generation VI rules
+#Pokemon LV 100 
+#Using STAB move with m_power and m_acc with the best type advantage
+#Stage 1 critical (6.25%)
+#No nature or ability is taken into account
+#All IVs = 31, All EVs = 252
+#Fights for 100 times each pair
+
+#Damage without type advantage, critical, random and accuracy
+damage<-function(atk,def,power=m_power,level=100){
+    #STAB * Critical * rand[0.85,1]
+    STAB <- 1.5
+    (((2*level+10)/250)*(atk/def)*power+2)*1.5
+}
+
+#Damage modifier, aka critical, random and accuracy
+mod <- function(acc=m_acc){
+    crit <-ifelse(runif(1)<=0.0625,1.5,1)
+    hit <- ifelse(runif(1)<=acc,1,0)
+    mod <- 1.5*crit*hit*runif(1,min=0.85,max=1)
+    return(mod)
+}
+
+stat_fol <- function(base,iv=31,ev=252,level=100){
+    ((2*base+iv+ev/4)*level/100)+5
+}
+
+battle<-function(poke1,poke2,times=100,level=100,verbose=FALSE){
+    #poke1 stats
+    hp1 <- stat_fol(pokemon[pokemon$Name==poke1,'HP'])+5+level
+    atk1 <- stat_fol(pokemon[pokemon$Name==poke1,'Attack'])
+    def1 <- stat_fol(pokemon[pokemon$Name==poke1,'Defense'])
+    spatk1 <- stat_fol(pokemon[pokemon$Name==poke1,'Sp..Atk'])
+    spdef1 <- stat_fol(pokemon[pokemon$Name==poke1,'Sp..Def'])
+    spd1 <- stat_fol(pokemon[pokemon$Name==poke1,'Speed'])
+    type1<-pokemon[pokemon$Name==poke1,'Type']
+    type1_1<-pokemon[pokemon$Name==poke1,'Type1']
+    type2_1<-pokemon[pokemon$Name==poke1,'Type2']
+    
+    #poke2 stats
+    hp2 <- stat_fol(pokemon[pokemon$Name==poke2,'HP'])+5+level
+    atk2 <- stat_fol(pokemon[pokemon$Name==poke2,'Attack'])
+    def2 <- stat_fol(pokemon[pokemon$Name==poke2,'Defense'])
+    spatk2 <- stat_fol(pokemon[pokemon$Name==poke2,'Sp..Atk'])
+    spdef2 <- stat_fol(pokemon[pokemon$Name==poke2,'Sp..Def'])
+    spd2 <- stat_fol(pokemon[pokemon$Name==poke2,'Speed'])
+    type2<-pokemon[pokemon$Name==poke2,'Type']
+    type1_2<-pokemon[pokemon$Name==poke2,'Type1']
+    type2_2<-pokemon[pokemon$Name==poke2,'Type2']
+    
+    #Choose most deadly poke1 move
+    type_mod1_1 <-d_type_adv[type2,type1_1]
+    type_mod2_1 <- d_type_adv[type2,type2_1]
+    
+    atk_type1_1<-type_mod1_1*damage(atk1,def2)
+    spatk_type1_1<-type_mod1_1*damage(spatk1,spdef2)
+    atk_type2_1<-type_mod2_1*damage(atk1,def2)
+    spatk_type2_1<-type_mod2_1*damage(spatk1,spdef2)
+    
+    final_atk1 <- max(atk_type1_1,spatk_type1_1,
+                      atk_type2_1,spatk_type2_1,na.rm = TRUE)
+    
+    #Choose most deadly poke2 move
+    type_mod1_2 <-d_type_adv[type1,type1_2]
+    type_mod2_2 <- d_type_adv[type1,type2_2]
+    
+    atk_type1_2<-type_mod1_2*damage(atk2,def1)
+    spatk_type1_2<-type_mod1_2*damage(spatk2,spdef1)
+    atk_type2_2<-type_mod2_2*damage(atk2,def1)
+    spatk_type2_2<-type_mod2_2*damage(spatk2,spdef1)
+    
+    final_atk2 <- max(atk_type1_2,spatk_type1_2,
+                      atk_type2_2,spatk_type2_2,na.rm = TRUE)
+    
+    #If they can't damage each other, return a draw
+    if (final_atk1==0 &final_atk2==0) return(0.5)
+    
+    #Battle till faint
+    win1<-0
+    win2<-0
+    for (i in 1:times){
+        temp1 <-hp1
+        temp2 <-hp2
+        count <-0
+        while (TRUE){
+            #if poke2 has more speed add it moves first
+            if (spd2>spd1){
+                #poke2 hits
+                temp1=temp1-final_atk2*mod()
+                if (verbose) print(paste(poke2,'attacked for',final_atk2*mod(),sep=' '))
+                if (temp1<=0) {
+                    win2=win2+1
+                    if (verbose) print(paste(poke2,'wins at HP',temp2,sep=' '))
+                    break
+                }
+                #poke1 hits
+                temp2=temp2-final_atk1*mod()
+                if (verbose) print(paste(poke1,'attacked for',final_atk1*mod(),sep=' '))
+                if (temp2<=0) {
+                    win1=win1+1
+                    if (verbose) print(paste(poke1,'wins at HP',temp1,sep=' '))
+                    break
+                }
+            }
+            #if poke2 has more speed add it moves first
+            else if(spd1>spd2){
+                #poke1 hits
+                temp2=temp2-final_atk1*mod()
+                if (verbose) print(paste(poke1,'attacked for',final_atk1*mod(),sep=' '))
+                if (temp2<=0) {
+                    win1=win1+1
+                    if (verbose) print(paste(poke1,'wins at HP',temp1,sep=' '))
+                    break
+                }
+                #poke2 hits
+                temp1=temp1-final_atk2*mod()
+                if (verbose) print(paste(poke2,'attacked for',final_atk2*mod(),sep=' '))
+                if (temp1<=0) {
+                    win2=win2+1
+                    if (verbose) print(paste(poke2,'wins at HP',temp2,sep=' '))
+                    break
+                }
+            }
+            #Otherwise use a tiebreaker
+            else{
+                #If true, poke1 hits first
+                if (sample(c(TRUE,FALSE))[1]){
+                    #poke1 hits
+                    temp2=temp2-final_atk1*mod()
+                    if (verbose) print(paste(poke1,'attacked for',final_atk1*mod(),sep=' '))
+                    if (temp2<=0) {
+                        win1=win1+1
+                        if (verbose) print(paste(poke1,'wins at HP',temp1,sep=' '))
+                        break
+                    }
+                    #poke2 hits
+                    temp1=temp1-final_atk2*mod()
+                    if (verbose) print(paste(poke2,'attacked for',final_atk2*mod(),sep=' '))
+                    if (temp1<=0) {
+                        win2=win2+1
+                        if (verbose) print(paste(poke2,'wins at HP',temp2,sep=' '))
+                        break
+                    } 
+                }
+                #If false, poke2 hits first
+                else{
+                    #poke2 hits
+                    temp1=temp1-final_atk2*mod()
+                    if (verbose) print(paste(poke2,'attacked for',final_atk2*mod(),sep=' '))
+                    if (temp1<=0) {
+                        win2=win2+1
+                        if (verbose) print(paste(poke2,'wins at HP',temp2,sep=' '))
+                        break
+                    }
+                    #poke1 hits
+                    temp2=temp2-final_atk1*mod()
+                    if (verbose) print(paste(poke1,'attacked for',final_atk1*mod(),sep=' '))
+                    if (temp2<=0) {
+                        win1=win1+1
+                        if (verbose) print(paste(poke1,'wins at HP',temp1,sep=' '))
+                        break
+                    }
+                }
+            }
+        }
+    }
+    return(win1/times)
+}
+```
+
+## Simulate Battles for All Pairs of Pokémons
+
+We simulate 100 battles for each pair of Pokémons, resulting in 800 x 800 x 100 total battles simulated. Then we record the ```win rate``` for each pair. For instance, if we pitch Bulbasaur against Caterpie and the function returns 0.99, it means that Bulbasaur has a 99% ```win rate``` against Caterpie as a result of the 100 battles. When the same Pokémon is matched, such as Pikachu vs Pikachu, we assume a draw. The ```result``` of all battles is saved to ```result.rds``` for future reference.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+if (!file.exists('result.rds')){
+   result <- data.frame(matrix(1:800/100,nrow=dim(pokemon)[1],ncol=dim(pokemon)[1]))
+    rownames(result)<-pokemon$Name
+    colnames(result)<-pokemon$Name
+    count<-0
+    for (i in pokemon$Name){
+        for (j in pokemon$Name){
+            #Same pokemon assumes draw
+            if (i==j){
+                result[i,j]<-0.5
+            } else{
+            result[i,j]<-battle(i,j)
+            }
+            count=count+1
+            print(paste(count,i,j,sep=' '))
+        }
+    }
+
+    #Save to RDS
+    saveRDS(result,'result.rds') 
+} else {
+    result<-readRDS('result.rds')
+}
+
+```
+
+## Best Variance-Adjusted Average Win Rate
+
+At the core of every strongest-Pokémon argument is how you define *strongest*: the toughest wall, the most destructive sweeper, the most advantageous type, and the list go on. Here we define *strongest* as the best ```variance-adjusted average win rate```. The rationale is two-fold. First, it should be straight forward that after 100 battles with each Pokémon, a Pokémon with a high ```average win rate``` would be strong. However, we need to take into account the *variability* of its win rate. For instance, compare a Pokémon that wins all of its battles 50% of times with a Pokémon that wins half of its battles 100% of times but loses the rest 100% of times. Their ```average win rate``` is both 50% but we would rather have a more consistent Pokémon that is the former. Below is the ```average win rate``` vs ```standard deviation of win rate``` plot of all Pokémons by primary types.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+#Row SD function
+rowSDs <- function(x) {
+  sqrt(rowSums((x - rowMeans(x))^2)/(dim(x)[2] - 1))
+}
+
+#Plot average win rate vs standard deviation
+rank_poke<-cbind(pokemon,winrate=rowMeans(result),sd=rowSDs(result))
+g<-ggplot(data=rank_poke,aes(x=winrate,y=sd))
+g+geom_point(aes(color=Type1))+xlab('Average Win Rates')+
+    ylab('Standard Deviation of Win Rates')+
+    ggtitle("Reward vs Risk Plot by Primary Types") 
+```
+
+Therefore, we adopted the [Sharpe Ratio](ttp://www.investopedia.com/terms/s/sharperatio.asp), a variance-adjusted return metric for an asset in capital asset pricing model. We use the ```average win rate``` of all battles (yes, all 64 million of them) as the ```benchmark win rate```. We calculate our ```variance-adjusted average win rate``` by subtracting the ```average win rate``` of each Pokémon by ```excess win rate per standard deviation``` of it.
+
+This way, if a stranger challenges you to a 1-on-1 Pokémon battle and you don't know what he has, you know that your best and most consistent chance of winning is to choose Palkia.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+#Benchmark return
+b_return <- mean(rowMeans(result))
+
+#Sharpe ratio
+sharpe <- (rowMeans(result)-b_return)/rowSDs(result)
+
+#Ranking according to variance-adjusted price
+sharped <- data.frame(sort(sharpe,decreasing=TRUE))
+kable(head(sharped,20),col.names='Shrape Ratio')
+```
